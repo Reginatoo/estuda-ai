@@ -4,17 +4,28 @@ const BASE = "https://generativelanguage.googleapis.com/v1beta";
 const FALLBACK_CHAT = "gemini-flash-latest";
 const FALLBACK_EMBED = "gemini-embedding-001";
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Faz a chamada à API. Se o Gemini estiver sobrecarregado (503) ou limitando
+ * requisições (429), tenta de novo esperando 1s, 2s e 4s (backoff exponencial).
+ */
 async function call<T>(apiKey: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${BASE}/${path}`, {
-    method: body === undefined ? "GET" : "POST",
-    headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  if (!res.ok) {
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(`${BASE}/${path}`, {
+      method: body === undefined ? "GET" : "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (res.ok) return res.json() as Promise<T>;
+    if ([429, 500, 503].includes(res.status) && attempt < 3) {
+      await sleep(1000 * 2 ** attempt);
+      continue;
+    }
+    if (res.status === 503) throw new Error("O Gemini está sobrecarregado agora. Tente de novo em alguns segundos.");
     const err = await res.text();
     throw new Error(`Gemini ${res.status}: ${err.slice(0, 300)}`);
   }
-  return res.json() as Promise<T>;
 }
 
 interface ModelInfo {
