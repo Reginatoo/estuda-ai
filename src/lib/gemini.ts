@@ -1,13 +1,14 @@
 const BASE = "https://generativelanguage.googleapis.com/v1beta";
 
-export const CHAT_MODEL = "gemini-2.5-flash";
-export const EMBED_MODEL = "gemini-embedding-001";
+// Usados só se a lista de modelos não puder ser consultada.
+const FALLBACK_CHAT = "gemini-flash-latest";
+const FALLBACK_EMBED = "gemini-embedding-001";
 
-async function call<T>(apiKey: string, path: string, body: unknown): Promise<T> {
+async function call<T>(apiKey: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${BASE}/${path}`, {
-    method: "POST",
+    method: body === undefined ? "GET" : "POST",
     headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-    body: JSON.stringify(body),
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!res.ok) {
     const err = await res.text();
@@ -16,21 +17,66 @@ async function call<T>(apiKey: string, path: string, body: unknown): Promise<T> 
   return res.json() as Promise<T>;
 }
 
+interface ModelInfo {
+  name: string; // ex.: "models/gemini-2.5-flash"
+  supportedGenerationMethods?: string[];
+}
+
+/** Extrai o número da versão do nome do modelo ("gemini-3.8-flash" -> 3.8). */
+function version(name: string): number {
+  const m = name.match(/gemini-(\d+(?:\.\d+)?)/);
+  return m ? parseFloat(m[1]) : 0;
+}
+
+const cache = new Map<string, Promise<{ chat: string; embed: string }>>();
+
+/**
+ * Os modelos do Gemini são aposentados com o tempo. Em vez de fixar um nome no
+ * código, consultamos a API e escolhemos o "flash" estável mais novo e o modelo
+ * de embeddings disponível para a chave do usuário.
+ */
+export function pickModels(apiKey: string) {
+  if (!cache.has(apiKey)) cache.set(apiKey, (async () => {
+    try {
+      const { models = [] } = await call<{ models?: ModelInfo[] }>(apiKey, "models?pageSize=1000");
+      const ids = (m: ModelInfo) => m.name.replace(/^models\//, "");
+      const unstable = /(preview|exp|lite|image|tts|audio|live|thinking|8b)/;
+
+      const chat = models
+        .filter((m) => m.supportedGenerationMethods?.includes("generateContent"))
+        .map(ids)
+        .filter((id) => /^gemini-\d/.test(id) && id.includes("flash") && !unstable.test(id))
+        .sort((a, b) => version(b) - version(a) || a.length - b.length)[0];
+
+      const embed = models
+        .filter((m) => m.supportedGenerationMethods?.some((g) => g.includes("mbed")))
+        .map(ids)
+        .sort((a, b) => Number(b.startsWith("gemini-embedding")) - Number(a.startsWith("gemini-embedding")))[0];
+
+      return { chat: chat ?? FALLBACK_CHAT, embed: embed ?? FALLBACK_EMBED };
+    } catch {
+      return { chat: FALLBACK_CHAT, embed: FALLBACK_EMBED };
+    }
+  })());
+  return cache.get(apiKey)!;
+}
+
 /** Gera embeddings (vetores que representam o significado do texto), em lotes de até 100. */
 export async function embed(
   apiKey: string,
   texts: string[],
   taskType: "RETRIEVAL_DOCUMENT" | "RETRIEVAL_QUERY"
 ): Promise<number[][]> {
+  const { embed: model } = await pickModels(apiKey);
   const out: number[][] = [];
   for (let i = 0; i < texts.length; i += 100) {
     const batch = texts.slice(i, i + 100);
     const data = await call<{ embeddings: { values: number[] }[] }>(
       apiKey,
-      `models/${EMBED_MODEL}:batchEmbedContents`,
+      `models/${model}:batchEmbedContents`,
       {
         requests: batch.map((text) => ({
-          model: `models/${EMBED_MODEL}`,
+          model: `models/${model}`,
           content: { parts: [{ text }] },
           taskType,
         })),
@@ -43,9 +89,10 @@ export async function embed(
 
 /** Chama o modelo de linguagem. Com `json: true`, pede a resposta já em JSON. */
 export async function generate(apiKey: string, prompt: string, json = false): Promise<string> {
+  const { chat: model } = await pickModels(apiKey);
   const data = await call<{ candidates?: { content?: { parts?: { text?: string }[] } }[] }>(
     apiKey,
-    `models/${CHAT_MODEL}:generateContent`,
+    `models/${model}:generateContent`,
     {
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       generationConfig: {
