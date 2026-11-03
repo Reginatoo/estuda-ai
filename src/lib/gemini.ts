@@ -13,16 +13,49 @@ class GeminiError extends Error {
 }
 
 /**
- * Faz a chamada à API. Se o Gemini estiver sobrecarregado (503), tenta de novo
- * esperando 1s, 2s, 4s… (backoff exponencial).
+ * `apiKey` = chave do próprio usuário (chama o Gemini direto do navegador) ou
+ * `null` = usa a IA do site, pela função /api/gemini, com a chave escondida no servidor.
  */
-async function call<T>(apiKey: string, path: string, body?: unknown, retries = 3): Promise<T> {
-  for (let attempt = 0; ; attempt++) {
-    const res = await fetch(`${BASE}/${path}`, {
+export type Access = string | null;
+
+/** Acesso à IA: `{ key: "..." }` (chave do usuário) ou `{ key: null }` (IA do site). */
+export interface AI {
+  key: Access;
+}
+
+let serverCheck: Promise<boolean> | null = null;
+
+/** Pergunta ao servidor se a IA do site está configurada (resultado guardado). */
+export function serverAvailable(): Promise<boolean> {
+  serverCheck ??= fetch("/api/gemini")
+    .then((r) => (r.ok ? r.json() : { enabled: false }))
+    .then((d: { enabled?: boolean }) => Boolean(d.enabled))
+    .catch(() => false);
+  return serverCheck;
+}
+
+function request(apiKey: Access, path: string, body?: unknown) {
+  if (apiKey) {
+    return fetch(`${BASE}/${path}`, {
       method: body === undefined ? "GET" : "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
+  }
+  return fetch("/api/gemini", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, body }),
+  });
+}
+
+/**
+ * Faz a chamada à API. Se o Gemini estiver sobrecarregado (503), tenta de novo
+ * esperando 1s, 2s, 4s… (backoff exponencial).
+ */
+async function call<T>(apiKey: Access, path: string, body?: unknown, retries = 3): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    const res = await request(apiKey, path, body);
     if (res.ok) return res.json() as Promise<T>;
     if ([500, 503].includes(res.status) && attempt < retries) {
       await sleep(1000 * 2 ** attempt);
@@ -45,6 +78,7 @@ function version(name: string): number {
 }
 
 const cache = new Map<string, Promise<{ chat: string[]; embed: string }>>();
+const SERVER = "__server__";
 
 /**
  * Os modelos do Gemini são aposentados com o tempo. Em vez de fixar um nome no
@@ -52,8 +86,9 @@ const cache = new Map<string, Promise<{ chat: string[]; embed: string }>>();
  * de embeddings disponível para a chave do usuário. Guardamos uma lista em ordem
  * de preferência: se um modelo estiver sobrecarregado, usamos o próximo.
  */
-export function pickModels(apiKey: string) {
-  if (!cache.has(apiKey)) cache.set(apiKey, (async () => {
+export function pickModels(apiKey: Access) {
+  const cacheKey = apiKey ?? SERVER;
+  if (!cache.has(cacheKey)) cache.set(cacheKey, (async () => {
     try {
       const { models = [] } = await call<{ models?: ModelInfo[] }>(apiKey, "models?pageSize=1000");
       const ids = (m: ModelInfo) => m.name.replace(/^models\//, "");
@@ -64,8 +99,11 @@ export function pickModels(apiKey: string) {
         .map(ids)
         .filter((id) => /^gemini-\d+(\.\d+)?-flash(-lite)?$/.test(id) && !unstable.test(id.replace("-lite", "")))
         .sort((a, b) => version(b) - version(a) || a.length - b.length);
-      // primeiro os "flash" completos, depois os "lite" (mais leves e quase sempre disponíveis)
-      const chat = [...flash.filter((id) => !id.endsWith("-lite")), ...flash.filter((id) => id.endsWith("-lite"))];
+      const full = flash.filter((id) => !id.endsWith("-lite"));
+      const lite = flash.filter((id) => id.endsWith("-lite"));
+      // Com a chave do usuário: primeiro os "flash" completos (melhores).
+      // Com a IA do site: primeiro os "lite", que têm cota grátis bem maior.
+      const chat = apiKey ? [...full, ...lite] : [...lite, ...full];
 
       const embed = models
         .filter((m) => m.supportedGenerationMethods?.some((g) => g.includes("mbed")))
@@ -77,12 +115,12 @@ export function pickModels(apiKey: string) {
       return { chat: [FALLBACK_CHAT], embed: FALLBACK_EMBED };
     }
   })());
-  return cache.get(apiKey)!;
+  return cache.get(cacheKey)!;
 }
 
 /** Gera embeddings (vetores que representam o significado do texto), em lotes de até 100. */
 export async function embed(
-  apiKey: string,
+  apiKey: Access,
   texts: string[],
   taskType: "RETRIEVAL_DOCUMENT" | "RETRIEVAL_QUERY"
 ): Promise<number[][]> {
@@ -110,7 +148,7 @@ export async function embed(
  * Chama o modelo de linguagem. Com `json: true`, pede a resposta já em JSON.
  * Se o modelo estiver sobrecarregado ou sem cota, tenta o próximo da lista.
  */
-export async function generate(apiKey: string, prompt: string, json = false): Promise<string> {
+export async function generate(apiKey: Access, prompt: string, json = false): Promise<string> {
   const { chat } = await pickModels(apiKey);
   let lastError: unknown;
   for (const model of chat.slice(0, 8)) {
