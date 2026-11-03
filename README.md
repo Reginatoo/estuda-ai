@@ -32,14 +32,18 @@ pergunta ──► embedding da pergunta ──► similaridade de cosseno ┘
 | Leitura do PDF | `src/lib/pdf.ts` | Usa o pdf.js para extrair o texto de cada página |
 | Divisão em trechos | `src/lib/chunk.ts` | Pedaços de ~900 caracteres com 150 de sobreposição, terminando em fim de frase |
 | Embeddings | `src/lib/gemini.ts` | Converte cada trecho num vetor com o modelo de embeddings do Gemini, em lotes de 100 |
+| Servidor | `api/gemini.ts` | Função serverless que usa a chave escondida e limita o uso |
 | Busca | `src/lib/search.ts` | Similaridade de cosseno; BM25 (palavras-chave) como plano B |
 | Geração | `src/lib/study.ts` | Monta os prompts de resposta, flashcards e quiz (modelo Gemini Flash, saída em JSON) |
 
 ### Decisões e limitações
 
-- **Sem servidor:** tudo roda no navegador e a chave da API fica no `localStorage`
-  de quem usa. É simples e barato para um projeto pessoal; num produto real a
-  chave ficaria num backend.
+- **Chave escondida no servidor:** a função `api/gemini.ts` (Vercel) guarda a chave do
+  Gemini numa variável de ambiente e repassa só as 3 operações que o app usa, com
+  limite de pedidos por visitante. Assim qualquer pessoa usa o app sem chave e a chave
+  nunca chega ao navegador. Quem quiser pode usar a própria chave (fica no `localStorage`).
+- **Cota grátis:** com a IA do site, o app prefere os modelos Flash-Lite, que têm cota
+  diária bem maior no plano gratuito.
 - **Modo demonstração:** sem chave, a aba "Perguntar" usa busca por palavras-chave
   (BM25) e mostra os trechos encontrados, sem gerar texto.
 - **Contra alucinação:** o prompt manda responder só com os trechos e dizer quando
@@ -59,8 +63,11 @@ npm install
 npm run dev
 ```
 
-Abra `http://localhost:5173`, cole sua chave gratuita do
+Abra `http://localhost:5173`, clique em "usar minha chave", cole sua chave gratuita do
 [Google AI Studio](https://aistudio.google.com/apikey) e envie um PDF.
+
+Para publicar com a IA do site, crie a variável de ambiente `GEMINI_API_KEY` no projeto
+da Vercel.
 
 ## Próximos passos
 
