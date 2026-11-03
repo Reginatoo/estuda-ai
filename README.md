@@ -1,5 +1,7 @@
 # EstudaAí
 
+**App no ar:** https://estuda-ai-teal.vercel.app
+
 Assistente de estudos com IA: você envia o PDF de uma aula ou apostila e pode
 **fazer perguntas sobre o material** (com a página de onde veio cada resposta),
 **gerar flashcards** e **fazer um quiz**.
@@ -29,9 +31,9 @@ pergunta ──► embedding da pergunta ──► similaridade de cosseno ┘
 |---|---|---|
 | Leitura do PDF | `src/lib/pdf.ts` | Usa o pdf.js para extrair o texto de cada página |
 | Divisão em trechos | `src/lib/chunk.ts` | Pedaços de ~900 caracteres com 150 de sobreposição, terminando em fim de frase |
-| Embeddings | `src/lib/gemini.ts` | Converte cada trecho num vetor (`gemini-embedding-001`), em lotes de 100 |
+| Embeddings | `src/lib/gemini.ts` | Converte cada trecho num vetor com o modelo de embeddings do Gemini, em lotes de 100 |
 | Busca | `src/lib/search.ts` | Similaridade de cosseno; BM25 (palavras-chave) como plano B |
-| Geração | `src/lib/study.ts` | Monta os prompts de resposta, flashcards e quiz (`gemini-2.5-flash`, saída em JSON) |
+| Geração | `src/lib/study.ts` | Monta os prompts de resposta, flashcards e quiz (modelo Gemini Flash, saída em JSON) |
 
 ### Decisões e limitações
 
@@ -44,6 +46,11 @@ pergunta ──► embedding da pergunta ──► similaridade de cosseno ┘
   o material não cobre a pergunta. As fontes ficam visíveis para conferir.
 - **PDF escaneado** (só imagem) não funciona, porque não há texto para extrair.
 - Os vetores ficam em memória: recarregar a página exige indexar de novo.
+- **Modelos escolhidos em tempo de execução:** o Google aposenta versões do Gemini com
+  frequência, então o app consulta a lista de modelos da API e usa o Flash estável mais
+  novo e o modelo de embeddings disponível, em vez de fixar um nome no código.
+- **Resiliência:** se o modelo responder 503 (sobrecarregado), o app tenta de novo com
+  backoff exponencial e, se continuar falhando, passa para o próximo modelo da lista.
 
 ## Rodar localmente
 
