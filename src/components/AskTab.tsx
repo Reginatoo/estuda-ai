@@ -1,10 +1,11 @@
 import { useState } from "react";
 import Markdown from "react-markdown";
 import type { Chunk } from "../lib/chunk";
+import type { AI } from "../lib/gemini";
 import { ask, type Answer } from "../lib/study";
 
 interface Props {
-  apiKey: string | null;
+  ai: AI | null;
   chunks: Chunk[];
 }
 
@@ -14,7 +15,7 @@ interface Turn {
   error?: string;
 }
 
-export function AskTab({ apiKey, chunks }: Props) {
+export function AskTab({ ai, chunks }: Props) {
   const [question, setQuestion] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
   const [loading, setLoading] = useState(false);
@@ -26,7 +27,7 @@ export function AskTab({ apiKey, chunks }: Props) {
     setLoading(true);
     setTurns((t) => [...t, { question: q }]);
     try {
-      const answer = await ask(apiKey, q, chunks);
+      const answer = await ask(ai, q, chunks);
       setTurns((t) => t.map((x, i) => (i === t.length - 1 ? { ...x, answer } : x)));
     } catch (e) {
       setTurns((t) => t.map((x, i) => (i === t.length - 1 ? { ...x, error: (e as Error).message } : x)));

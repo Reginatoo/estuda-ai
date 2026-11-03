@@ -1,26 +1,27 @@
 import { useState } from "react";
 import type { Chunk } from "../lib/chunk";
+import type { AI } from "../lib/gemini";
 import { makeQuiz, type QuizQuestion } from "../lib/study";
 import { NeedsKey } from "./NeedsKey";
 
 interface Props {
-  apiKey: string | null;
+  ai: AI | null;
   chunks: Chunk[];
 }
 
-export function QuizTab({ apiKey, chunks }: Props) {
+export function QuizTab({ ai, chunks }: Props) {
   const [questions, setQuestions] = useState<QuizQuestion[]>([]);
   const [answers, setAnswers] = useState<(number | null)[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  if (!apiKey) return <NeedsKey what="gerar o quiz" />;
+  if (!ai) return <NeedsKey what="gerar o quiz" />;
 
   async function generate() {
     setLoading(true);
     setError(null);
     try {
-      const qs = await makeQuiz(apiKey!, chunks);
+      const qs = await makeQuiz(ai!, chunks);
       setQuestions(qs);
       setAnswers(qs.map(() => null));
     } catch (e) {

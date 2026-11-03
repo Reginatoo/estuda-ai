@@ -1,27 +1,28 @@
 import { useState } from "react";
 import type { Chunk } from "../lib/chunk";
+import type { AI } from "../lib/gemini";
 import { makeFlashcards, type Flashcard } from "../lib/study";
 import { NeedsKey } from "./NeedsKey";
 
 interface Props {
-  apiKey: string | null;
+  ai: AI | null;
   chunks: Chunk[];
 }
 
-export function FlashcardsTab({ apiKey, chunks }: Props) {
+export function FlashcardsTab({ ai, chunks }: Props) {
   const [cards, setCards] = useState<Flashcard[]>([]);
   const [index, setIndex] = useState(0);
   const [flipped, setFlipped] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  if (!apiKey) return <NeedsKey what="gerar flashcards" />;
+  if (!ai) return <NeedsKey what="gerar flashcards" />;
 
   async function generate() {
     setLoading(true);
     setError(null);
     try {
-      setCards(await makeFlashcards(apiKey!, chunks));
+      setCards(await makeFlashcards(ai!, chunks));
       setIndex(0);
       setFlipped(false);
     } catch (e) {
