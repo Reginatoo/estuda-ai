@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { extractPages } from "./lib/pdf";
 import { chunkPages, type Chunk } from "./lib/chunk";
 import { indexChunks } from "./lib/study";
+import { serverAvailable, type AI } from "./lib/gemini";
 import { AskTab } from "./components/AskTab";
 import { FlashcardsTab } from "./components/FlashcardsTab";
 import { QuizTab } from "./components/QuizTab";
@@ -23,6 +24,15 @@ export default function App() {
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("ask");
+  const [serverOn, setServerOn] = useState(false);
+
+  // Descobre se o site tem a IA própria configurada (chave escondida no servidor).
+  useEffect(() => {
+    serverAvailable().then(setServerOn);
+  }, []);
+
+  // Chave do usuário tem prioridade; sem ela, usa a IA do site; sem nenhuma, modo demonstração.
+  const ai: AI | null = apiKey ? { key: apiKey } : serverOn ? { key: null } : null;
 
   async function onFile(file: File) {
     setError(null);
@@ -34,10 +44,10 @@ export default function App() {
       if (!pageTexts.length) throw new Error("Não encontrei texto nesse PDF (pode ser um PDF escaneado, só com imagem).");
       setPages(pageTexts.length);
       let parts = chunkPages(pageTexts);
-      if (apiKey) {
+      if (ai) {
         setStatus(`Indexando ${parts.length} trechos com IA…`);
         try {
-          parts = await indexChunks(apiKey, parts);
+          parts = await indexChunks(ai, parts);
         } catch (e) {
           setError(`Não consegui gerar os embeddings (${(e as Error).message}). Vou usar busca por palavras-chave.`);
         }
@@ -63,7 +73,7 @@ export default function App() {
             <p className="tagline">Converse com o seu material de estudo, com a fonte de cada resposta.</p>
           </div>
         </div>
-        <ApiKeyField value={apiKey} onChange={setApiKey} />
+        <ApiKeyField value={apiKey} serverOn={serverOn} onChange={setApiKey} />
       </header>
 
       <section className="card upload">
@@ -96,9 +106,9 @@ export default function App() {
             <button role="tab" aria-selected={tab === "quiz"} onClick={() => setTab("quiz")}>Quiz</button>
           </nav>
           <main className="card">
-            {tab === "ask" && <AskTab apiKey={apiKey} chunks={chunks} />}
-            {tab === "cards" && <FlashcardsTab apiKey={apiKey} chunks={chunks} />}
-            {tab === "quiz" && <QuizTab apiKey={apiKey} chunks={chunks} />}
+            {tab === "ask" && <AskTab ai={ai} chunks={chunks} />}
+            {tab === "cards" && <FlashcardsTab ai={ai} chunks={chunks} />}
+            {tab === "quiz" && <QuizTab ai={ai} chunks={chunks} />}
           </main>
         </>
       )}
