@@ -1,4 +1,5 @@
 import { useState } from "react";
+import Markdown from "react-markdown";
 import type { Chunk } from "../lib/chunk";
 import { ask, type Answer } from "../lib/study";
 
@@ -47,7 +48,9 @@ export function AskTab({ apiKey, chunks }: Props) {
             {t.error && <p className="error">{t.error}</p>}
             {t.answer && (
               <>
-                <p className="a">{t.answer.text}</p>
+                <div className="a">
+                  <Markdown>{t.answer.text}</Markdown>
+                </div>
                 {t.answer.sources.length > 0 && (
                   <details className="sources">
                     <summary>Trechos usados ({t.answer.sources.length})</summary>
