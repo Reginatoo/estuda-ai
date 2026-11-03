@@ -6,11 +6,17 @@ const FALLBACK_EMBED = "gemini-embedding-001";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+class GeminiError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+  }
+}
+
 /**
- * Faz a chamada à API. Se o Gemini estiver sobrecarregado (503) ou limitando
- * requisições (429), tenta de novo esperando 1s, 2s e 4s (backoff exponencial).
+ * Faz a chamada à API. Se o Gemini estiver sobrecarregado (503), tenta de novo
+ * esperando 1s, 2s, 4s… (backoff exponencial).
  */
-async function call<T>(apiKey: string, path: string, body?: unknown): Promise<T> {
+async function call<T>(apiKey: string, path: string, body?: unknown, retries = 3): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     const res = await fetch(`${BASE}/${path}`, {
       method: body === undefined ? "GET" : "POST",
@@ -18,13 +24,12 @@ async function call<T>(apiKey: string, path: string, body?: unknown): Promise<T>
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (res.ok) return res.json() as Promise<T>;
-    if ([429, 500, 503].includes(res.status) && attempt < 3) {
+    if ([500, 503].includes(res.status) && attempt < retries) {
       await sleep(1000 * 2 ** attempt);
       continue;
     }
-    if (res.status === 503) throw new Error("O Gemini está sobrecarregado agora. Tente de novo em alguns segundos.");
     const err = await res.text();
-    throw new Error(`Gemini ${res.status}: ${err.slice(0, 300)}`);
+    throw new GeminiError(res.status, `Gemini ${res.status}: ${err.slice(0, 300)}`);
   }
 }
 
@@ -39,12 +44,13 @@ function version(name: string): number {
   return m ? parseFloat(m[1]) : 0;
 }
 
-const cache = new Map<string, Promise<{ chat: string; embed: string }>>();
+const cache = new Map<string, Promise<{ chat: string[]; embed: string }>>();
 
 /**
  * Os modelos do Gemini são aposentados com o tempo. Em vez de fixar um nome no
  * código, consultamos a API e escolhemos o "flash" estável mais novo e o modelo
- * de embeddings disponível para a chave do usuário.
+ * de embeddings disponível para a chave do usuário. Guardamos uma lista em ordem
+ * de preferência: se um modelo estiver sobrecarregado, usamos o próximo.
  */
 export function pickModels(apiKey: string) {
   if (!cache.has(apiKey)) cache.set(apiKey, (async () => {
@@ -53,20 +59,22 @@ export function pickModels(apiKey: string) {
       const ids = (m: ModelInfo) => m.name.replace(/^models\//, "");
       const unstable = /(preview|exp|lite|image|tts|audio|live|thinking|8b)/;
 
-      const chat = models
+      const flash = models
         .filter((m) => m.supportedGenerationMethods?.includes("generateContent"))
         .map(ids)
-        .filter((id) => /^gemini-\d/.test(id) && id.includes("flash") && !unstable.test(id))
-        .sort((a, b) => version(b) - version(a) || a.length - b.length)[0];
+        .filter((id) => /^gemini-\d+(\.\d+)?-flash(-lite)?$/.test(id) && !unstable.test(id.replace("-lite", "")))
+        .sort((a, b) => version(b) - version(a) || a.length - b.length);
+      // primeiro os "flash" completos, depois os "lite" (mais leves e quase sempre disponíveis)
+      const chat = [...flash.filter((id) => !id.endsWith("-lite")), ...flash.filter((id) => id.endsWith("-lite"))];
 
       const embed = models
         .filter((m) => m.supportedGenerationMethods?.some((g) => g.includes("mbed")))
         .map(ids)
         .sort((a, b) => Number(b.startsWith("gemini-embedding")) - Number(a.startsWith("gemini-embedding")))[0];
 
-      return { chat: chat ?? FALLBACK_CHAT, embed: embed ?? FALLBACK_EMBED };
+      return { chat: chat.length ? chat : [FALLBACK_CHAT], embed: embed ?? FALLBACK_EMBED };
     } catch {
-      return { chat: FALLBACK_CHAT, embed: FALLBACK_EMBED };
+      return { chat: [FALLBACK_CHAT], embed: FALLBACK_EMBED };
     }
   })());
   return cache.get(apiKey)!;
@@ -98,19 +106,34 @@ export async function embed(
   return out;
 }
 
-/** Chama o modelo de linguagem. Com `json: true`, pede a resposta já em JSON. */
+/**
+ * Chama o modelo de linguagem. Com `json: true`, pede a resposta já em JSON.
+ * Se o modelo estiver sobrecarregado ou sem cota, tenta o próximo da lista.
+ */
 export async function generate(apiKey: string, prompt: string, json = false): Promise<string> {
-  const { chat: model } = await pickModels(apiKey);
-  const data = await call<{ candidates?: { content?: { parts?: { text?: string }[] } }[] }>(
-    apiKey,
-    `models/${model}:generateContent`,
-    {
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0.3,
-        ...(json ? { responseMimeType: "application/json" } : {}),
-      },
+  const { chat } = await pickModels(apiKey);
+  let lastError: unknown;
+  for (const model of chat.slice(0, 8)) {
+    try {
+      const data = await call<{ candidates?: { content?: { parts?: { text?: string }[] } }[] }>(
+        apiKey,
+        `models/${model}:generateContent`,
+        {
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.3,
+            ...(json ? { responseMimeType: "application/json" } : {}),
+          },
+        },
+        1
+      );
+      return data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
+    } catch (e) {
+      lastError = e;
+      if (!(e instanceof GeminiError) || ![404, 429, 500, 503].includes(e.status)) throw e;
     }
-  );
-  return data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
+  }
+  throw lastError instanceof GeminiError && lastError.status === 503
+    ? new Error("O Gemini está sobrecarregado agora. Tente de novo em alguns segundos.")
+    : lastError;
 }
